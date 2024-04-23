@@ -1,0 +1,20 @@
+{
+    "layouts": [
+        "./layouts/header.layout.html",
+        "./layouts/footer.layout.html",
+        "./layouts/post.layout.html"
+    ],
+    "pages": {
+        "garden": {
+            "src": "./layouts/post.layout.html",
+            "path": "/posts/go-garden",
+            "markdown": {
+                "path": "./posts/sample.md"
+            },
+            "args": {
+                "title": "Garden of Go",
+                "publishDate": "2022-12-31"
+            }
+        }
+    }
+}
