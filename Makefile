@@ -4,4 +4,4 @@ test:
 	go test ./...
 
 example:
-	go run .
+	go run . -manifest=./example/smolmanifest.json
