@@ -1,164 +1,241 @@
 /*
-Smolblog generates a static site from a JSON manifest.
+Smolblog runs a site from a JSON manifest.
 */
 package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
+	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"time"
 
 	"github.com/yuin/goldmark"
 )
 
-func main() {
-	wd, err := os.Getwd()
-	if err != nil {
-		panic(err)
+type (
+	// Manifest is the structure of the data driving the web server.
+	//
+	// It has two main pieces:
+	// - `layouts`, which are any templates that are globbed
+	// - `rotues`, which are registered as get routes and served by the handler
+	Manifest struct {
+		Layouts []string         `json:"layouts"`
+		Routes  map[string]Route `json:"routes"`
 	}
 
+	// Route is a registered path that is run when a GET request is made to it.
+	// TODO: Doc more
+	Route struct {
+		// The name of the template to execute first
+		Template string `json:"template"`
+		// Any arbitrary arguments to be used in executing the template
+		Args map[string]any `json:"args"`
+	}
+)
+
+func main() {
 	var (
-		// Default to the current director and basic manifest name if not provided:
-		man = flag.String("manifest", filepath.Join(wd, "smolmanifest.json"), "The location of the manifest")
-		out = flag.String("output", filepath.Join(wd, "/dist"), "The output directory for the rendered pages")
+		ctx, cancel = signal.NotifyContext(context.Background(), os.Interrupt)
+
+		manifestPath = flag.String("manifest", "", "path to the manifest")
+		port         = flag.Int("port", 4444, "port to run the sever on")
 	)
 	flag.Parse()
+	defer cancel()
 
-	if err := realMain(*man, *out); err != nil {
-		fmt.Println(err)
+	if *manifestPath == "" {
+		slog.Error("'-manifest' must be provided")
+		os.Exit(1)
+	}
+
+	if err := realMain(ctx, *manifestPath, *port); err != nil {
+		slog.Error("error occurred", "err", err)
 		os.Exit(1)
 	}
 }
 
-type manifest struct {
-	Layouts []string          `json:"layouts"`
-	Pages   map[string]page   `json:"pages"`
-	Args    map[string]string `json:"args"`
-}
-
-// Representation of a page that eventually gets rendered.
-type page struct {
-	// Pages have arguments that get passed to the rendering function
-	Args map[string]string `json:"args"`
-	// The main layout to use for the page
-	Layout string `json:"layout"`
-	// Where to render the page in the output directory
-	Path string
-	// Optional: Markdown causes the markdown at the given location to be parsed
-	// and added to [executionArgs].RenderedMarkdown
-	Markdown markdown `json:"markdown"`
-}
-
-// Making this into an object so it can be expanded later.
-type markdown struct {
-	Path string `json:"path"`
-}
-
 // Using this to return an error and `main` can deal with exit codes.
-//
-// Takes in a string pointing to the manifest file.
-func realMain(manPath, outDir string) error {
-	manPath = filepath.Join(manPath) // Cleans the argument
-	outDir = filepath.Join(outDir)   // Cleans the output argument
+func realMain(ctx context.Context, manPath string, port int) error {
 	var (
-		manDir = filepath.Dir(manPath)
+		h = newHandler(manPath)
+		s = http.Server{
+			Addr:         fmt.Sprintf("0.0.0.0:%d", port),
+			Handler:      h,
+			ReadTimeout:  1 * time.Second,
+			WriteTimeout: 1. * time.Second,
+		}
+		errs = make(chan error)
 	)
 
-	// Parsing of the manifest to drive the rest of the program:
-	manFile, err := os.Open(manPath)
-	if err != nil {
-		return fmt.Errorf("error opening manifest: %s", err)
-	}
-	defer manFile.Close()
+	// Waiting for cancellation signal to stop the server
+	go func() {
+		<-ctx.Done()
+		s.Close()
+	}()
 
-	var man manifest
-	if err := json.NewDecoder(manFile).Decode(&man); err != nil {
-		return fmt.Errorf("error opening manifest: %s", err)
-	}
-
-	// Layouts are defined relative to the manifest
-	tpls, err := parseLayouts(manPath, man.Layouts)
-	if err != nil {
-		return fmt.Errorf("error parsing layouts: %s", err)
-	}
-
-	// Render pages one by one
-	for name, page := range man.Pages {
-		args := executionArgs{
-			Args: page.Args,
+	// The server process:
+	go func() {
+		slog.Info("server started", "on", fmt.Sprintf("0.0.0.0:%d", port))
+		if err := s.ListenAndServe(); err != nil {
+			errs <- fmt.Errorf("error serving: %s", err)
 		}
-
-		// Parse markdown file if needed
-		if md := page.Markdown; md.Path != "" {
-			path := md.Path
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(manDir, path)
-			}
-			mdByts, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("error opening markdown for '%s': %s", name, err)
-			}
-
-			var buf bytes.Buffer
-			if err := goldmark.Convert(mdByts, &buf); err != nil {
-				return fmt.Errorf("error converting markdown for '%s': %s", name, err)
-			}
-
-			args.RenderedMarkdown = template.HTML(buf.String())
-		}
-
-		f, err := createIndex(filepath.Join(outDir, page.Path, "index.html"))
-		if err != nil {
-			return fmt.Errorf("error creating index.html for page '%s': %s", name, err)
-		}
-		defer f.Close()
-
-		if err := tpls.ExecuteTemplate(f, "post", args); err != nil {
-			return fmt.Errorf("error executing template for page '%s': %s", name, err)
-		}
+	}()
+	// Waiting for either an error or the ctx to cancel
+	select {
+	case err := <-errs:
+		return err
+	case <-ctx.Done():
 	}
 
 	return nil
 }
 
-// Creates the index.html at the given path.
-func createIndex(p string) (*os.File, error) {
-	if err := os.MkdirAll(filepath.Dir(p), 0770); err != nil {
-		return nil, err
-	}
-
-	return os.Create(p)
+// Does the serving of each request and holds dependencies of executing said requests.
+//
+// When told to, it re-parses the manifest and templates.
+// If unable to serve the request, it will return an error code.
+type handler struct {
+	manifestPath string // Points to the manifest
+	// Points to the parent directory of the manifest.
+	// This is so paths in the manifest can be relative to the manifest itself.
+	manifestDir string
 }
 
-type executionArgs struct {
-	RenderedMarkdown template.HTML
-	Args             map[string]string
+// Sets the manifest path on a new handler as well as the manifest directory
+// so requests have access to it for resolving relative paths.
+func newHandler(manPath string) *handler {
+	return &handler{
+		manifestPath: manPath,
+		manifestDir:  filepath.Dir(manPath),
+	}
 }
 
-// Parses the layout paths relative to the manifest path.
-func parseLayouts(manifestPath string, layoutPaths []string) (*template.Template, error) {
-	var (
-		manifestDir = filepath.Dir(manifestPath)
-		paths       = make([]string, 0, len(layoutPaths))
-	)
-	for _, path := range layoutPaths {
-		if filepath.IsAbs(path) {
-			// If it's an abolute path, don't use the manifest directory
-			paths = append(paths, path)
-			continue
-		}
-
-		paths = append(paths, filepath.Join(manifestDir, path))
-	}
-
-	tpls, err := template.ParseFiles(paths...)
+// Returns the manifest and loads any layouts specified in the manifest.
+func loadManifest(ctx context.Context, manifestPath, manifestDir string) (*Manifest, *template.Template, error) {
+	// Reading and parsing of the manifest.
+	// This will determine where the layouts are and what to parse next.
+	byts, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing layouts: %s", err)
+		return nil, nil, fmt.Errorf("error reading manfiest: %s", err)
 	}
 
-	return tpls, nil
+	var man Manifest
+	if err := json.Unmarshal(byts, &man); err != nil {
+		return nil, nil, fmt.Errorf("error unmarshaling manifest: %s", err)
+	}
+
+	// Parsing layouts happens here, putting them on the `handler` struct
+	// for usage when responding to a request.
+	//
+	// Filepaths for layouts are relative to the manifest's path, so
+	// they must be joined to the manifest path to properly resolve.
+	paths := make([]string, 0, len(man.Layouts))
+	for _, l := range man.Layouts {
+		path := filepath.Join(manifestDir, l)
+		paths = append(paths, path)
+	}
+	tpls, err := template.New("").
+		Funcs(templateFuncs(manifestDir)).
+		ParseFiles(paths...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error parsing layouts: %s", err)
+	}
+
+	return &man, tpls, nil
+}
+
+// Creates the template functions that can be used when executing.
+func templateFuncs(manifestDir string) template.FuncMap {
+	return template.FuncMap{
+		// Creates a closure that opens the given file (relative to the manifest) and parses
+		// it as markdown.
+		// In the case of any error, it will panic.
+		//
+		// Returns the rendered HTML, unescaped.
+		"renderMarkdown": func(src string) template.HTML {
+			path := filepath.Join(manifestDir, src)
+			mdByts, err := os.ReadFile(path)
+			if err != nil {
+				panic(fmt.Sprintf("error opening file to parse markdown: %s", err))
+			}
+
+			var buf bytes.Buffer
+			if err := goldmark.Convert(mdByts, &buf); err != nil {
+				panic(fmt.Sprintf("error converting markdown: %s", err))
+			}
+
+			return template.HTML(buf.String())
+		},
+	}
+}
+
+// This holds the data getting passed to the template being executed,
+// as well as information about the current path being handled.
+type routeArgs struct {
+	// The path of the current route
+	Path string
+	// The args from the manifest
+	Args map[string]any
+}
+
+// ServeHTTP implements [http.Handler] for each request.
+//
+// It only serves GET's.
+// It looks up the route in the manifest, and if it's present, it executes the logic of the route: If the route is not found, it returns a 404.
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	slog.Info("request received",
+		"method", r.Method,
+		"location", r.URL.String(),
+	)
+
+	// Only respond to GETs, otherwise respond 405
+	if method := r.Method; method != http.MethodGet {
+		slog.Error("method not allowed", "method", method)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// The manifest is loaded each request in case there were changes to either the manifest
+	// itself or one of the templates.
+	man, tpls, err := loadManifest(r.Context(), h.manifestPath, h.manifestDir)
+	if err != nil {
+		slog.Error("error reloading manifest", "err", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Check that the route exists, if not: 404
+	path := r.URL.Path
+	route, ok := man.Routes[path] // Ignore fragments, query string etc
+	if !ok {
+		slog.Error("route not found", "path", path)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Each route is a template + arguments, so handling the route is just
+	// executing the template named in the route's `Template` field with the `Args` field.
+	//
+	// BUG: If there's an execution error, the write has already received output, so it
+	// automatically sends a 200 and the 500 is a superfluous call.
+	if err := tpls.ExecuteTemplate(
+		w,
+		route.Template,
+		routeArgs{
+			Path: path,
+			Args: route.Args,
+		},
+	); err != nil {
+		slog.Error("error executing route's template", "route", route, "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 }

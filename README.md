@@ -11,15 +11,3 @@ arguments are a single level map, and pages are a single level array.
 
 Most of the binary is a wrapper around existing Go functionality, but the idea
 is that if you can produce the JSON, this can do the rest.
-
-## Reuseable Templates
-
-## Static Assets
-
-# TODO's
-
-- [x] MVP that renders my existing site (jamesholdren.com)
-- [ ] Status bar or something
-- [-] Support for static assets (copy from one spot to another)
-- [-] Post processors? (Support for CSS/JS minification)
-- [ ] Helper functions

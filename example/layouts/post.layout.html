@@ -4,7 +4,7 @@
 
 <head>
   <title>{{ .Args.title }}</title>
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta charset="UTF-8">
   <meta name="description" content="{{ .Args.Description }}">
 	<link rel="stylesheet" href="/static/css/main.css">
@@ -21,7 +21,8 @@
     <div class="publish-date">{{ .Args.publishDate }}</div>
     <h1 class="post-title">{{ .Args.title }}</h1>
 
-    {{- .RenderedMarkdown }}
+    {{ renderMarkdown .Args.markdown }}
+
   </div>
 
   {{ template "footer" -}}
