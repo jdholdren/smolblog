@@ -101,7 +101,7 @@ func realMain(parent context.Context, manPath, output string, port int) error {
 			"-nv",
 			"-nH",
 			"-P",
-			"./build",
+			output,
 			"-r",
 			"-E",
 			fmt.Sprintf("0.0.0.0:%d", port),
