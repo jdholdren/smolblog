@@ -18,7 +18,8 @@
             "template": "index"
         },
         "/static/main.css": {
-            "static_path": "/static/main.css"
+            "static_path": "/static/main.css",
+            "content_type": "text/css"
         }
     }
 }

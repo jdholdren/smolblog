@@ -35,7 +35,8 @@ type (
 	// Route is a registered path that is run when a GET request is made to it.
 	Route struct {
 		// If the route is simply a static file
-		StaticPath string `json:"static_path"`
+		StaticPath  string `json:"static_path"`
+		ContentType string `json:"content_type"`
 		// The name of the template to execute first
 		Template string `json:"template"`
 		// Any arbitrary arguments to be used in executing the template
@@ -257,6 +258,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Error("error reading file", "err", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		// Write the content type out if there is one, so css/js files are parsed correctly
+		if route.ContentType != "" {
+			w.Header().Add("Content-Type", route.ContentType)
 		}
 		if _, err := w.Write(f); err != nil {
 			slog.Error("error writing file", "err", err)
