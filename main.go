@@ -95,26 +95,23 @@ func realMain(parent context.Context, manPath, output string, port int) error {
 	}()
 
 	if output != "" {
-		// Start up a process that will call wget to render the static website
-		go func() {
-			// Stop the other routines once output has finished
-			defer cancel()
+		cmd := exec.Command("wget")
+		cmd.Args = []string{
+			"-nv",
+			"-nH",
+			"-P",
+			"./build",
+			"-r",
+			"-E",
+			fmt.Sprintf("0.0.0.0:%d", port),
+		}
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("error running wget: %s", err)
+		}
 
-			cmd := exec.Command("wget")
-			cmd.Args = []string{
-				"-nv",
-				"-nH",
-				"-P",
-				"./build",
-				"-r",
-				"-E",
-				fmt.Sprintf("0.0.0.0:%d", port),
-			}
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				errs <- fmt.Errorf("error running wget: %s", err)
-			}
-		}()
+		// Stop the other routines once output has finished
+		cancel()
 	}
 
 	// Waiting for either an error or the ctx to cancel
