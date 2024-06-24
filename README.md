@@ -3,11 +3,13 @@ The tiniest site generator I could think of.
 
 ## The Idea
 
-A static site generator that is driven from a JSON file instead of a database.
-The templates are rendered using Go's stdlib templates, which some people don't like,
-but is entirely flexible and requires no external dependency.
-The hiearchy of args passed to a template is rather flat, so nothing too obscure can be done:
-arguments are a single level map, and pages are a single level array.
+This main command takes in a path to a `manifest.json` and serves a site based
+on the routes in the JSON.
+Each GET call re-reads the manifest and parses layouts so not reloading of the binary is required,
+just your browser tab.
+It then uses those layouts and manifest to execute the template you specify.
+This should allow for rather fast iteration of a site.
 
-Most of the binary is a wrapper around existing Go functionality, but the idea
-is that if you can produce the JSON, this can do the rest.
+When you're ready to export it, you can use the `-output` flag.
+This will start the server as normal, but then use `wget` to generate the
+static version of your site in the location you specify.

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"time"
@@ -32,8 +33,9 @@ type (
 	}
 
 	// Route is a registered path that is run when a GET request is made to it.
-	// TODO: Doc more
 	Route struct {
+		// If the route is simply a static file
+		StaticPath string `json:"static_path"`
 		// The name of the template to execute first
 		Template string `json:"template"`
 		// Any arbitrary arguments to be used in executing the template
@@ -47,6 +49,7 @@ func main() {
 
 		manifestPath = flag.String("manifest", "", "path to the manifest")
 		port         = flag.Int("port", 4444, "port to run the sever on")
+		output       = flag.String("output", "", "")
 	)
 	flag.Parse()
 	defer cancel()
@@ -56,14 +59,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := realMain(ctx, *manifestPath, *port); err != nil {
+	if err := realMain(ctx, *manifestPath, *output, *port); err != nil {
 		slog.Error("error occurred", "err", err)
 		os.Exit(1)
 	}
 }
 
 // Using this to return an error and `main` can deal with exit codes.
-func realMain(ctx context.Context, manPath string, port int) error {
+func realMain(parent context.Context, manPath, output string, port int) error {
 	var (
 		h = newHandler(manPath)
 		s = http.Server{
@@ -72,8 +75,10 @@ func realMain(ctx context.Context, manPath string, port int) error {
 			ReadTimeout:  1 * time.Second,
 			WriteTimeout: 1. * time.Second,
 		}
-		errs = make(chan error)
+		ctx, cancel = context.WithCancel(parent)
+		errs        = make(chan error)
 	)
+	defer cancel()
 
 	// Waiting for cancellation signal to stop the server
 	go func() {
@@ -88,6 +93,30 @@ func realMain(ctx context.Context, manPath string, port int) error {
 			errs <- fmt.Errorf("error serving: %s", err)
 		}
 	}()
+
+	if output != "" {
+		// Start up a process that will call wget to render the static website
+		go func() {
+			// Stop the other routines once output has finished
+			defer cancel()
+
+			cmd := exec.Command("wget")
+			cmd.Args = []string{
+				"-nv",
+				"-nH",
+				"-P",
+				"./build",
+				"-r",
+				"-E",
+				fmt.Sprintf("0.0.0.0:%d", port),
+			}
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				errs <- fmt.Errorf("error running wget: %s", err)
+			}
+		}()
+	}
+
 	// Waiting for either an error or the ctx to cancel
 	select {
 	case err := <-errs:
@@ -199,7 +228,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Only respond to GETs, otherwise respond 405
 	if method := r.Method; method != http.MethodGet {
 		slog.Error("method not allowed", "method", method)
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -217,7 +246,28 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route, ok := man.Routes[path] // Ignore fragments, query string etc
 	if !ok {
 		slog.Error("route not found", "path", path)
-		w.WriteHeader(http.StatusNotFound)
+		http.Error(w, "route not found", http.StatusNotFound)
+		return
+	}
+
+	// If the path has a `StaticPath`, then just read and serve the file.
+	// Since the route has been registered, any error here is a 500, including
+	// if the file could not be found.
+	if sPath := route.StaticPath; sPath != "" {
+		path := filepath.Join(h.manifestDir, sPath)
+		f, err := os.ReadFile(path)
+		if err != nil {
+			slog.Error("error reading file", "err", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if _, err := w.Write(f); err != nil {
+			slog.Error("error writing file", "err", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Do not continue to handle it as a templated route
 		return
 	}
 

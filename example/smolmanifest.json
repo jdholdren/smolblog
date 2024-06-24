@@ -2,16 +2,23 @@
     "layouts": [
         "./layouts/header.layout.html",
         "./layouts/footer.layout.html",
-        "./layouts/post.layout.html"
+        "./layouts/post.layout.html",
+        "./layouts/index.layout.html"
     ],
     "routes": {
-        "/posts/go-garden": {
+        "/posts/go-garden.html": {
             "template": "post",
             "args": {
                 "title": "Garden of Go",
                 "publishDate": "2022-12-31",
                 "markdown": "./posts/sample.md"
             }
+        },
+        "/": {
+            "template": "index"
+        },
+        "/static/main.css": {
+            "static_path": "/static/main.css"
         }
     }
 }

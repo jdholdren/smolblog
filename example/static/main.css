@@ -1,0 +1,16 @@
+html, body { margin: 0px;
+	font-family: 'Roboto', sans-serif;
+	background: #fff;
+
+	--dark: #5b7063;
+	--light: #d5e7dc;
+	--black: rgb(0, 0, 0, 0.9);
+	--grey: #f7f3f5;
+	--tan: #e5e3d1;
+	--dark-tan: #626033;
+
+	height: 100%;
+
+  /* I just hate the bulky font look */
+  -webkit-font-smoothing: antialiased;
+}
