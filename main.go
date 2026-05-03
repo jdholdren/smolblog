@@ -277,10 +277,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Each route is a template + arguments, so handling the route is just
 	// executing the template named in the route's `Template` field with the `Args` field.
 	//
-	// BUG: If there's an execution error, the write has already received output, so it
-	// automatically sends a 200 and the 500 is a superfluous call.
+	// Render into a buffer first so an execution error can return a real 500
+	// instead of a partially-flushed 200.
+	var buf bytes.Buffer
 	if err := tpls.ExecuteTemplate(
-		w,
+		&buf,
 		route.Template,
 		routeArgs{
 			Path: path,
@@ -288,7 +289,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	); err != nil {
 		slog.Error("error executing route's template", "route", route, "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := buf.WriteTo(w); err != nil {
+		slog.Error("error writing rendered template", "err", err)
 		return
 	}
 }
