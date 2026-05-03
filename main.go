@@ -96,8 +96,8 @@ func realMain(parent context.Context, manPath, output string, port int) error {
 	}()
 
 	if output != "" {
-		cmd := exec.Command("wget")
-		cmd.Args = []string{
+		cmd := exec.Command(
+			"wget",
 			"-nv",
 			"-nH",
 			"-P",
@@ -105,7 +105,7 @@ func realMain(parent context.Context, manPath, output string, port int) error {
 			"-r",
 			"-E",
 			fmt.Sprintf("0.0.0.0:%d", port),
-		}
+		)
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("error running wget: %s", err)
