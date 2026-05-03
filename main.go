@@ -84,7 +84,9 @@ func realMain(parent context.Context, manPath, output string, port int) error {
 	// Waiting for cancellation signal to stop the server
 	go func() {
 		<-ctx.Done()
-		s.Close()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.Shutdown(shutdownCtx)
 	}()
 
 	// The server process:
