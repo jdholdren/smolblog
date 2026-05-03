@@ -146,7 +146,7 @@ func newHandler(manPath string) *handler {
 }
 
 // Returns the manifest and loads any layouts specified in the manifest.
-func loadManifest(ctx context.Context, manifestPath, manifestDir string) (*Manifest, *template.Template, error) {
+func loadManifest(manifestPath, manifestDir string) (*Manifest, *template.Template, error) {
 	// Reading and parsing of the manifest.
 	// This will determine where the layouts are and what to parse next.
 	byts, err := os.ReadFile(manifestPath)
@@ -232,7 +232,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// The manifest is loaded each request in case there were changes to either the manifest
 	// itself or one of the templates.
-	man, tpls, err := loadManifest(r.Context(), h.manifestPath, h.manifestDir)
+	man, tpls, err := loadManifest(h.manifestPath, h.manifestDir)
 	if err != nil {
 		slog.Error("error reloading manifest", "err", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
