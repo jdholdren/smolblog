@@ -73,8 +73,8 @@ func realMain(parent context.Context, manPath, output string, port int) error {
 		s = http.Server{
 			Addr:         fmt.Sprintf("0.0.0.0:%d", port),
 			Handler:      h,
-			ReadTimeout:  1 * time.Second,
-			WriteTimeout: 1. * time.Second,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 10 * time.Second,
 		}
 		ctx, cancel = context.WithCancel(parent)
 		errs        = make(chan error)
