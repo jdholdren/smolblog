@@ -22,3 +22,9 @@ go.work
 
 # The default build directory
 dist/
+
+# Compiled binary
+/smolblog
+
+# Generated image variants in the example site
+/example/img/
