@@ -5,6 +5,13 @@
         "./layouts/post.layout.html",
         "./layouts/index.layout.html"
     ],
+    "images": [
+        {
+            "name": "sample",
+            "src": "originals/sample.jpg",
+            "widths": [400, 800, 1200]
+        }
+    ],
     "routes": {
         "/posts/go-garden.html": {
             "template": "post",

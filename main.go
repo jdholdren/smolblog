@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yuin/goldmark"
@@ -30,6 +32,7 @@ type (
 	Manifest struct {
 		Layouts []string         `json:"layouts"`
 		Routes  map[string]Route `json:"routes"`
+		Images  []ImageManifest  `json:"images"`
 	}
 
 	// Route is a registered path that is run when a GET request is made to it.
@@ -42,6 +45,19 @@ type (
 		// Any arbitrary arguments to be used in executing the template
 		Args map[string]any `json:"args"`
 	}
+
+	// ImageManifest describes a single source image and the resized variants
+	// to generate for it.
+	//
+	// Width and Height are not part of the user-authored manifest; they are
+	// populated when the image table is built by reading the source's header.
+	ImageManifest struct {
+		Name   string `json:"name"`
+		Src    string `json:"src"`
+		Widths []int  `json:"widths"`
+		width  int
+		height int
+	}
 )
 
 func main() {
@@ -51,6 +67,7 @@ func main() {
 		manifestPath = flag.String("manifest", "", "path to the manifest")
 		port         = flag.Int("port", 4444, "port to run the sever on")
 		output       = flag.String("output", "", "")
+		skipImages   = flag.Bool("skip-images", false, "skip the image pre-pass (useful for fast iteration)")
 	)
 	flag.Parse()
 	defer cancel()
@@ -60,14 +77,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := realMain(ctx, *manifestPath, *output, *port); err != nil {
+	if err := realMain(ctx, *manifestPath, *output, *port, *skipImages); err != nil {
 		slog.Error("error occurred", "err", err)
 		os.Exit(1)
 	}
 }
 
 // Using this to return an error and `main` can deal with exit codes.
-func realMain(parent context.Context, manPath, output string, port int) error {
+func realMain(parent context.Context, manPath, output string, port int, skipImages bool) error {
+	if !skipImages {
+		man, _, err := loadManifest(manPath, filepath.Dir(manPath))
+		if err != nil {
+			return fmt.Errorf("loading manifest for image pre-pass: %s", err)
+		}
+		if err := processImages(filepath.Dir(manPath), man.Images); err != nil {
+			return fmt.Errorf("processing images: %s", err)
+		}
+	}
+
 	var (
 		h = newHandler(manPath)
 		s = http.Server{
@@ -146,7 +173,7 @@ func newHandler(manPath string) *handler {
 }
 
 // Returns the manifest and loads any layouts specified in the manifest.
-func loadManifest(ctx context.Context, manifestPath, manifestDir string) (*Manifest, *template.Template, error) {
+func loadManifest(manifestPath, manifestDir string) (*Manifest, *template.Template, error) {
 	// Reading and parsing of the manifest.
 	// This will determine where the layouts are and what to parse next.
 	byts, err := os.ReadFile(manifestPath)
@@ -157,6 +184,30 @@ func loadManifest(ctx context.Context, manifestPath, manifestDir string) (*Manif
 	var man Manifest
 	if err := json.Unmarshal(byts, &man); err != nil {
 		return nil, nil, fmt.Errorf("error unmarshaling manifest: %s", err)
+	}
+
+	imageTable, err := buildImageTable(manifestDir, man.Images)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error building image table: %s", err)
+	}
+
+	// Register a static route for each (image, width) variant so the existing
+	// static-file branch in ServeHTTP serves them and `wget -r` discovers them
+	// by following srcset links.
+	if man.Routes == nil && len(man.Images) > 0 {
+		man.Routes = map[string]Route{}
+	}
+	for _, im := range man.Images {
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(im.Src)), ".")
+		ct := mime.TypeByExtension("." + ext)
+		for _, w := range im.Widths {
+			rel := imageFile(im.Name, ext, w)
+			path := "/" + rel
+			man.Routes[path] = Route{
+				StaticPath:  path,
+				ContentType: ct,
+			}
+		}
 	}
 
 	// Parsing layouts happens here, putting them on the `handler` struct
@@ -170,7 +221,7 @@ func loadManifest(ctx context.Context, manifestPath, manifestDir string) (*Manif
 		paths = append(paths, path)
 	}
 	tpls, err := template.New("").
-		Funcs(templateFuncs(manifestDir)).
+		Funcs(templateFuncs(manifestDir, imageTable)).
 		ParseFiles(paths...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error parsing layouts: %s", err)
@@ -180,8 +231,9 @@ func loadManifest(ctx context.Context, manifestPath, manifestDir string) (*Manif
 }
 
 // Creates the template functions that can be used when executing.
-func templateFuncs(manifestDir string) template.FuncMap {
+func templateFuncs(manifestDir string, imageTable map[string]ImageManifest) template.FuncMap {
 	return template.FuncMap{
+		"image": imageFunc(imageTable),
 		// Creates a closure that opens the given file (relative to the manifest) and parses
 		// it as markdown.
 		// In the case of any error, it will panic.
@@ -232,7 +284,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// The manifest is loaded each request in case there were changes to either the manifest
 	// itself or one of the templates.
-	man, tpls, err := loadManifest(r.Context(), h.manifestPath, h.manifestDir)
+	man, tpls, err := loadManifest(h.manifestPath, h.manifestDir)
 	if err != nil {
 		slog.Error("error reloading manifest", "err", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
